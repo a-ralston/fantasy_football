@@ -1,0 +1,779 @@
+from requests import get
+from bs4 import BeautifulSoup
+import re
+import pandas as pd
+from pandas import Series,DataFrame
+import os
+from operator import add
+import numpy as np
+import time
+
+#---- Section 1: Set Up
+#---- This section prints the time when the code starts running, goes to the league standings page of the chosen league and then finds the tag for
+#---- this table. Then it sets Game_Week equal to the most recent gameweek that the table is linked too. Then all of the Players in the league are
+#---- found and their unique player numbers are saved in the list UniquePlayerNumbers. This is used to find the link to each players gameweek score
+#---- page. A list is also created containing the Team Name of every team in the league. A dictionary is then created containing the names of all
+#---- players in the league. This will be used later for the production of league tables.
+
+start_time = time.strftime("%H:%M:%S")
+print ('Start = ' + start_time)
+
+#Create lists for Player codes and team names
+UniquePlayerNumbers = []
+LeagueTeamNames =[]
+
+# Go into the current league standings
+url = 'http://fantasy.premierleague.com/my-leagues/303246/standings/'
+htmlString = get(url).text
+html = BeautifulSoup(htmlString, 'html5lib')
+
+#Find the standings table and convert the code into a string
+Tag = html.find_all('div', {'class':'ism'})
+Tag = str(Tag)
+
+#Find the Game week that the table runs off
+gameweek = re.search('event-history/(.+?)/">', Tag)
+if gameweek:
+	Game_Week = gameweek.group(1)
+
+#Find all the unique player codes and team names
+UniquePlayerNumbers = re.findall('entry/(.+?)/event', Tag,re.DOTALL)
+LeagueTeamNames = re.findall(Game_Week+'/">(.+?)</a></td>', Tag,re.DOTALL)
+
+#Estimate time taken based on 25 seconds per team
+
+estimated_seconds = 25 * int(len(UniquePlayerNumbers)) + 20
+estimated_end_time= time.time() + estimated_seconds
+print("Estimated End Time = " + time.strftime("%H:%M:%S",time.localtime(estimated_end_time)))
+print("Calulating...")
+
+#Find the Names of the Players in the league and put them into a dictionary
+PlayerNames = dict()
+for i in range(0,len(LeagueTeamNames)):
+	PlayerNames[i]  = re.search(re.sub(' ','',LeagueTeamNames[i]) + '</a></td>\n<td>(.+?)</td>', re.sub(' ','',Tag)).group(1)
+
+Game_Week = int(Game_Week)
+
+#---- Section 2: Fixtures
+#---- This section goes into the current gameweek of the first player in the league and finds the table containing this weeks fixtures. It then 
+#---- extracts the home and away teams, match scores and the match date. But the match date is in the format "21st Dec 15:00", so this is then 
+#---- broken down further into MatchDays, MatchMonths and MatchTimes where MatchTimes is converted into an integer. Then find today's day and month
+#---- and convert he order of the months of the year from Jan-Dec being 1-12, to Jul-Jun being 1-12 to match the football season. Then create a 
+#---- list of match statuses (Not Started, In Play or Completed) based on comparing the month, day amd time with that of each match. Match time 
+#---- is assumed to be 2 hours. 
+
+#Go to the current gameweek page of the first player in the league
+url = 'http://fantasy.premierleague.com/entry/' + str(UniquePlayerNumbers[0])+ '/event-history/' + str(Game_Week) +'/'
+htmlString = get(url).text
+html = BeautifulSoup(htmlString, 'html5lib')
+
+#Find the table containing this weeks fixtures
+Tag = html.find_all('div', {'class':'ismFixtureContainer'})
+Tag = str(Tag)
+
+Tag = re.sub(" ","",Tag)
+
+#Find all fixture dates and the home ans away teams for each fixture
+
+fixture_dates_Results = re.findall('ismResult">\n<td>(.+?)</td>', Tag, re.DOTALL)
+fixture_dates_Fixtures = re.findall('ismFixture">\n<td>(.+?)</td>', Tag, re.DOTALL)
+fixture_dates = fixture_dates_Results + fixture_dates_Fixtures
+home_teams = re.findall('ismHomeTeam">(.+?)</td>', Tag, re.DOTALL)
+away_teams = re.findall('ismAwayTeam">(.+?)</td>', Tag, re.DOTALL)
+match_score = re.findall('ismScore">(.+?)</td>', Tag, re.DOTALL)
+
+
+Month = ['Jul','Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun']
+
+MatchDays =[]
+MatchMonths = []
+MatchTimes = []
+
+#Split out the day, month and time for each match and populate a list for all 3 of them
+for i in range(0,len(fixture_dates)):
+	fixture = fixture_dates[i]
+	match_day = fixture[:2]
+	match_day = int(match_day)
+	match_month = fixture[2:5]
+	match_month = Month.index(str(match_month)) + 1
+	match_hour = int(fixture[5:7])*60
+	match_minute = int(fixture[8:])
+	match_time = match_hour + match_minute
+	match_time = int(match_time)
+	MatchDays.append(match_day)
+	MatchMonths.append(match_month)
+	MatchTimes.append(match_time)
+	
+
+#Find todays date and time seperately
+todays_day = int(time.strftime("%d"))
+todays_month = int(time.strftime("%m"))
+
+#Change the order of the months of the year from Jan-Dec being 1-12, to Jul-Jun being 1-12 to match the football season
+if todays_month < 7:
+	todays_month = todays_month + 6
+else:
+	todays_month = todays_month - 6
+
+current_time = str(time.strftime("%H:%M"))
+current_time = int(current_time[:2])*60 + int(current_time[3:])
+
+#Create an empty list for the match status of each match to be recorded
+Match_Statuses = []
+Team_Match_Statuses = []
+All_Teams = []
+
+#cycle through all items
+for i in range(0,len(MatchDays)):
+
+	if MatchMonths[i] == todays_month:
+
+		#Is the match playing today?
+		if MatchDays[i] == todays_day:
+			playing_today = True
+		else:
+			playing_today = False
+	
+		#If the match is playing today, work out if the match is currently in play, has been played or hasn't been played yet.
+		if playing_today == True:
+			if current_time < MatchTimes[i]:
+				GameStatus = 'Not Started'
+			elif MatchTimes[i] < current_time < MatchTimes[i] + 120:
+				GameStatus = 'In Play'
+			else:
+				GameStatus = 'Completed'
+		else:
+			if MatchDays[i] < todays_day:
+				GameStatus = 'Completed'
+			else:
+				GameStatus = 'Not Started'
+				
+	elif MatchMonths[i] < todays_month:
+		GameStatus = 'Completed'
+	else:
+		GameStatus = 'Not Started'
+		
+	Match_Statuses.append(GameStatus)
+
+#Create full lists with all teams and their current macth status
+Team_Match_Statuses = Match_Statuses + Match_Statuses
+All_Teams = home_teams + away_teams
+
+#---- Section 3:Create teams
+#----This section starts by creating epmty lists to deal with the game week points and points deductions for each team. Therefore every list will 
+#----have an entry for each player in the league. Then it cycles through each team in the current game week and finds all of the player data within
+#----that team including name, club, position, match status, goals, assists etc. These are all then appended into lists and concatenated together
+#----to create a dataframe for each team called Stats[current_player]. The players are assigned a player number in order to be able to put them back 
+#----into the order they were selected in the team. This dataframe is then sorted to put the Captain and Vice Captain in 14th and 15th positions 
+#----respectively in order to be able to assign double points correctly later. 
+
+#Create empty listsfor Total Points and Deductions
+TotalPointsList = []
+TotalDeductionsList = []
+GWTransferDeductionList = []
+CurrentGameWeekScoreList = []
+
+#Define Stats as a dictionary to be able to loop through every player and save the end data frame before moving onto the next player
+Stats = dict()
+TeamName = dict()
+
+for current_player in UniquePlayerNumbers:
+
+	url = 'http://fantasy.premierleague.com/entry/' + str(current_player)+ '/event-history/' + str(Game_Week) +'/'
+	htmlString = get(url).text
+	html = BeautifulSoup(htmlString, 'html5lib')
+
+	Players = []
+	Club = []
+	Status = []
+	Position = []
+	MinsPlayed = []
+	CleanSheet =[]
+	Captain = []
+	ViceCaptain = []
+	YellowCard = []
+	RedCard = []
+	GoalsConceded = []
+	BonusPoints = []
+	Assists = []
+	GoalsScored = []
+	Saves = []
+	OwnGoals = []
+	PenaltiesMissed = []
+	PenaltiesSaved = []
+	PlayerNumber = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+
+	#Do the following for all 15 players in the squad
+	for i in range(1,16):
+		#Identify the embedded tag of the current player
+		tags = html.find_all('div', {'id':'ismGraphical'+str(i)})
+		tags = str(tags)
+		
+		#Find player name
+		name = re.search('NAME"> (.+?)</span', tags)
+		#Check if player name exists
+		if name:
+			Player_Name = name.group(1)
+			
+		playersclub = re.search('.png" title="(.+?)" width', tags)
+		#Check if player name exists
+		if playersclub:
+			Players_Club = playersclub.group(1)
+			
+		#Match Status for the player
+		playersmatch = All_Teams.index(re.sub(" ","",Players_Club))
+		Player_Match_Status = Team_Match_Statuses[playersmatch]
+			
+		#Find player position
+		pos = re.search('"type": (.+?),', tags)
+		#Check if player position exists and assign correct position
+		if pos:
+			if pos.group(1) == str(1):
+				Player_Position = 'GK'
+			elif pos.group(1) == str(2):
+				Player_Position = 'DEF'
+			elif pos.group(1) == str(3):
+				Player_Position = 'MID'
+			elif pos.group(1) == str(4):
+				Player_Position = 'ATT'
+			else:
+				Player_Position = 'N/A'
+		
+		#Find the number of minutes played this week
+		minutes = re.search('Minutes played&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if minues played exists
+		if minutes:
+			Minutes_Played = int(minutes.group(1))
+		else:
+			Minutes_Played = int(0)
+		
+		#Find if player kept a clean sheet
+		clean_sheets = re.search('Clean sheets&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if Clean sheet stat exists for this player
+		if clean_sheets:
+			Clean_Sheet = int(clean_sheets.group(1))
+		else:
+			Clean_Sheet = int(0)
+		
+		#Check if player was Captain
+		captain	= re.search('"is_captain": (.+?),', tags)
+		vice_captain	= re.search('"is_vice_captain": (.+?),', tags)
+		if captain:
+			if captain.group(1) == 'true':
+				Is_Player_Captain = 'C'
+			elif vice_captain.group(1) == 'true':
+				Is_Player_Captain = 'VC'
+			else:
+				Is_Player_Captain = '-'
+			
+		#Check if player has been booked
+		yellow = re.search('Yellow cards&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has been booked, if not = 0
+		if yellow:
+			Yellow_Card = int(yellow.group(1))
+		else:
+			Yellow_Card = int(0)
+		
+		#Check if player has been sent off
+		red = re.search('Red cards&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has been sent off, if not = 0
+		if red:
+			Red_Card = int(red.group(1))
+		else:
+			Red_Card = int(0)
+		
+		#Check if player has conceded enough goals to lose points
+		conceded = re.search('Goals conceded&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has conceded enough goals to lose points, if not = 0
+		if conceded:
+			Goals_Conceded = int(conceded.group(1))
+		else:
+			Goals_Conceded = int(0)
+	
+		#Check if player recieved bonus points
+		bonus = re.search('Bonus&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has bonus points
+		if bonus:
+			Bonus_Points = int(bonus.group(1))
+		else:
+			Bonus_Points = int(0)
+		
+		#Check if player made an assist
+		assist = re.search('Assists&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player made an assist
+		if assist:
+			Goal_Assists = int(assist.group(1))
+		else:
+			Goal_Assists = int(0)
+
+		#Check if player scored any goals
+		scored = re.search('Goals scored&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player scored any goals
+		if scored:
+			Goals_Scored = int(scored.group(1))
+		else:
+			Goals_Scored = int(0)
+
+		#Check if keeper has made enough saves for bonus points
+		saves = re.search('Saves&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has made enough saves for bonus points
+		if saves:
+			Saves_Made = int(saves.group(1))
+		else:
+			Saves_Made = int(0)	
+
+		#Check if keeper has made enough saves for bonus points
+		owngoal = re.search('Own goals&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has made enough saves for bonus points
+		if owngoal:
+			Own_Goals = int(owngoal.group(1))
+		else:
+			Own_Goals = int(0)
+			
+		#Check if keeper has made any penalty saves
+		penaltysaves = re.search('Penalties saved&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has made enough saves for bonus points
+		if penaltysaves:
+			Penalty_Saves = int(penaltysaves.group(1))
+		else:
+			Penalty_Saves = int(0)	
+
+		#Check if player has missed a penalty
+		penaltymisses = re.search('Penalty missed&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		#Check if player has missed a penalty
+		if penaltymisses:
+			Penalty_Missed = int(penaltymisses.group(1))
+		else:
+			Penalty_Missed = int(0)
+
+		Players.append(Player_Name)
+		Status.append(Player_Match_Status)
+		Club.append(Players_Club)
+		Position.append(Player_Position)
+		MinsPlayed.append(Minutes_Played)
+		CleanSheet.append(Clean_Sheet)
+		Captain.append(Is_Player_Captain)
+		YellowCard.append(Yellow_Card)
+		RedCard.append(Red_Card)
+		GoalsConceded.append(Goals_Conceded)
+		BonusPoints.append(Bonus_Points)
+		Assists.append(Goal_Assists)
+		GoalsScored.append(Goals_Scored)
+		Saves.append(Saves_Made)
+		OwnGoals.append(Own_Goals)
+		PenaltiesMissed.append(Penalty_Missed)
+		PenaltiesSaved.append(Penalty_Saves)
+	
+	Players = Series(Players)
+	Club = Series(Club)
+	Status = Series(Status)
+	Position = Series(Position)
+	MinsPlayed = Series(MinsPlayed)
+	CleanSheet = Series(CleanSheet)
+	Captain = Series(Captain)
+	YellowCard = Series(YellowCard)
+	RedCard = Series(RedCard)
+	GoalsConceded = Series(GoalsConceded)
+	BonusPoints = Series(BonusPoints)
+	Assists = Series(Assists)
+	GoalsScored = Series(GoalsScored)
+	Saves = Series(Saves)
+	OwnGoals = Series(OwnGoals)	
+	PenaltiesMissed = Series(PenaltiesMissed)
+	PenaltiesSaved = Series(PenaltiesSaved)
+	PlayerNumber = Series(PlayerNumber)
+
+	# Concatenate into a DataFrame
+	Gameweek_Stats = pd.concat([PlayerNumber,Players,Club,Status,Position,MinsPlayed,CleanSheet,Captain,YellowCard,RedCard,GoalsConceded,BonusPoints,Assists,GoalsScored,Saves,OwnGoals,PenaltiesMissed,PenaltiesSaved],axis=1)
+
+	# Set up the columns
+	Gameweek_Stats.columns = ['No.','Players','Club','Match Status','Position','Minutes Played','Clean Sheet','Captain','YellowCard','RedCard','Goals Conceded','Bonus Points','Assists','Goals Scored','Saves','OwnGoals','PenaltiesMissed','PenaltiesSaved']
+
+	#Set index to start at 1
+	#Gameweek_Stats.index = np.arange(1, len(Gameweek_Stats) + 1)
+	
+	#Save the DataFrame for the current player and sort so that Captain is before Vice Capatain in order to assign double points
+	Stats[current_player] = Gameweek_Stats.sort_index(by=['Captain'], ascending =[True])
+	
+	
+#---- Section 4: Calculate the current score for each team
+#----This section is in the same loop as Section 3. It starts by setting the current game week score for the current team to equal 0 and creates an 
+#----empty list to hold the scores. It then cycles through all 15 players in the current team and performs the FPL scoring calculations on each 
+#----element. For example, if a player has played more than 60 minutes in a game then they get 2 points. Or if they miss a penalty, they are deducted
+#----2 points for each miss. The number of points for clean sheets and goals scored varies depending on the position of the player. So this is also
+#----calculated. The score is the calculated as a sum of these elements and then the captain bonus is assigned. First, there is a check to see if the 
+#----Triple Captain bonus has been played. Then it checks to see if the Captain has played this week. If the Captain's game has finished and he has
+#----not played, then the bonus is passed to the vice captain. The scores for all 15 players are then put into a list appended onto a the dataframe
+#----for the current team. This list is then sorted by player number to put the player back into the positions that they were selected in.
+
+	GWScore = []
+	CurrentGameWeekScore = 0
+	
+	#Now work out the score for each player by using the FPL scoring system
+	for row in range(0,15):
+		#Minutes Played
+		if int(Stats[current_player].iat[row,5]) > 60:
+			mp = 2
+		elif 0 < int(Stats[current_player].iat[row,5]) <= 60:
+			mp = 1
+		else:
+			mp = 0
+		#Yellow Card
+		yc = int(Stats[current_player].iat[row,8])* -1
+		#Red Card
+		rc = int(Stats[current_player].iat[row,9])*-3
+		#Bonus Points
+		bp = Stats[current_player].iat[row,11]
+		#Assists
+		ass = int(Stats[current_player].iat[row,12])*3
+		#Own Goals
+		og = int(Stats[current_player].iat[row,15])*-2
+		#Pen missed
+		pm = int(Stats[current_player].iat[row,16])*-2
+		#Pen Saved
+		ps = int(Stats[current_player].iat[row,17])*5
+		#Saves
+		svs = int(int(Stats[current_player].iat[row,14])/3)
+		#Goals Conceded
+		gc = int(int(Stats[current_player].iat[row,10])/2)*-1
+		
+		cs = 0
+		gs = 0
+		
+		if Stats[current_player].iat[row,4] == 'GK':
+			#Clean Sheets
+			cs = int(Stats[current_player].iat[row,6])*4
+			#Goal Scored
+			gs = int(Stats[current_player].iat[row,13])*6
+		elif Stats[current_player].iat[row,4] == 'DEF':
+			#Clean Sheets
+			cs = int(Stats[current_player].iat[row,6])*4
+			#Goal Scored
+			gs = int(Stats[current_player].iat[row,13])*6
+		elif Stats[current_player].iat[row,4] == 'MID':
+			#Clean Sheets
+			cs = int(Stats[current_player].iat[row,6])
+			#Goal Scored
+			gs = int(Stats[current_player].iat[row,13])*5
+		elif Stats[current_player].iat[row,4] == 'ATT':
+			#Clean Sheets
+			cs = 0
+			#Goal Scored
+			gs = int(Stats[current_player].iat[row,13])*4
+
+		new_score = int(mp + yc + rc + bp + ass + og + pm + ps + svs + gc + cs + gs)
+		
+		#Check for Triple captain
+		#Get the tag which will contain any chips played this gameweek
+		ChipTag = html.find_all('div', {'class':'ism-scoreboard__chip-status'})
+		if 'Triple' in ChipTag:
+			captain_factor = 3
+		else:
+			captain_factor = 2
+		
+		#If captains match is over and he played then double points, if not, then vice captain gets double points
+		if Stats[current_player].iat[row,7] == 'C':
+			if mp > 0:
+				new_score = new_score*captain_factor
+		elif Stats[current_player].iat[row,7] == 'VC':
+			if Stats[current_player].iat[row-1,3] == 'Complete':
+				if int(Stats[current_player].iat[row-1,5]) == 0:
+					new_score = new_score*captain_factor
+		
+		GWScore.append(new_score)
+		
+	#Put all Game week scores into a series	
+	GWScore = Series(GWScore)
+
+	Stats[current_player]=Stats[current_player].set_index(np.arange(len(Stats[current_player].index)))
+	
+	#Append the GW Scores onto the dataframe
+	Stats[current_player]['GW Score'] = pd.Series(GWScore)
+	
+	#Sort the players back into the order in which they were picked
+	Stats[current_player] = Stats[current_player].sort_index(by=['No.'], ascending =[True]).set_index(np.arange(len(Stats[current_player].index)))
+	
+#---- Section 5: Auto Sub procedure
+#----This section is still in the team loop created in Section 3. It starts by checking to see if the Bench Boost chip has been played. If it has
+#----all of the players are in play. If not, then it will work out which players scores should be counted. In all lists, 1 means a players score will
+#----count, 0 means it won't. It starts with the chosen starting 11. It cycles through each player, first checking if their game is complete. And 
+#----then it checks if that player actually played. If the player hasn't played then they will be marked as 0, if then have then they are a 1.
+#----The players counted by position in the variables GKs, DEFs, MIDs, ATTs. This is to ansure that auto subs don't break the formation rules of
+#----the game. A starting players score will continue to count until the match is completed, a sub will only happen once the match is completed.
+#----Then if the starting goalkeeper hasn't played, use the sub keeper. Now it checks if the All Out Attack chip has been used to allow a 2-5-3
+#----formation. If it has then subs can be used freely to make up 11 players. If not then there must be at least 3 defenders, 2 midfielders and
+#----1 attacker and the subs will be made accordingly. The list PlayingOrNot is then appeneded to the oringinal dataframe and the teams gameweek
+#----score is calculated as CurrentGameWeekScore.
+
+	
+	#Get the tag which will contain any chips played this gameweek
+	ChipTag = html.find_all('div', {'class':'ism-scoreboard__chip-status'})
+	
+	#If the Bench Boost game chip is played then say all players are playing. If not, then work out which players are playing and do auto subs as
+	#required
+	if 'Bench' in ChipTag:
+		PlayingOrNot = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+	else:
+		#Start by saying the starting 11 are all playing and the sub GK and 3 other subs are not.
+		Starting_11 = [1,1,1,1,1,1,1,1,1,1,1]
+		SubGK = [0]
+		Subs = [0,0,0]
+		PlayingOrNot =[]
+		#Set the number of all players, goalkeepers, defenders, midfielders and attakers to zero.
+		numplayers = 0
+		GKs= 0
+		DEFs = 0
+		MIDs = 0
+		ATTs = 0
+	
+		#find out which players scores will count towards the gameweek score.
+		for pl in range(0,11):
+			if Stats[current_player].iat[pl,3] == 'Completed':
+				if int(Stats[current_player].iat[pl,5]) == 0:
+					Starting_11[pl] = 0
+					if Stats[current_player].iat[pl,4] == 'GK':
+						GKs = GKs
+					elif Stats[current_player].iat[pl,4] == 'DEF':
+						DEFs = DEFs
+					elif Stats[current_player].iat[pl,4] == 'MID':
+						MIDs = MIDs
+					elif Stats[current_player].iat[pl,4] == 'ATT':
+						ATTs = ATTs
+				else:
+					if Stats[current_player].iat[pl,4] == 'GK':
+						GKs = GKs + 1
+					elif Stats[current_player].iat[pl,4] == 'DEF':
+						DEFs = DEFs + 1
+					elif Stats[current_player].iat[pl,4] == 'MID':
+						MIDs = MIDs + 1
+					elif Stats[current_player].iat[pl,4] == 'ATT':
+						ATTs = ATTs + 1
+			else:
+				if Stats[current_player].iat[pl,4] == 'GK':
+					GKs = GKs + 1
+				elif Stats[current_player].iat[pl,4] == 'DEF':
+					DEFs = DEFs + 1
+				elif Stats[current_player].iat[pl,4] == 'MID':
+					MIDs = MIDs + 1
+				elif Stats[current_player].iat[pl,4] == 'ATT':
+					ATTs = ATTs + 1
+		
+		#How many players scores currently count?
+		numplayers = sum(Starting_11) + sum(SubGK) + sum(Subs)
+	
+		#If the starting goalkeeper doesn't play, use the sub keeper.
+		if GKs == 0:
+			SubGK[0] = 1
+		else:
+			SubGK[0] = 0
+			
+		#if all out attack chip is played then allow a 2-5-3 formation
+		if 'All' in ChipTag:
+			#If the chip has been played then any sub can be made with the 3 outfield subs. This is done until a maximum of 11 players are used.
+			for pl in range(12,15):	
+				if numplayers < 11:
+					Subs[pl-12] = 1
+				numplayers = numplayers + 1
+				
+		else:
+			#If the chips isn't used then subs are made based on the rules. There must be min 3 DEF, 2 MID and 1 ATT at all times
+			for pl in range(12,15):	
+				if numplayers < 11:
+					if DEFs < 3:
+						if Stats[current_player].iat[pl,4] == 'DEF':
+							Subs[pl-12] = 1
+					elif MIDs < 2:
+						if Stats[current_player].iat[pl,4] == 'MID':
+							Subs[pl-12] = 1
+					elif ATTs < 1:
+						if Stats[current_player].iat[pl,4] == 'ATT':
+							Subs[pl-12] = 1			
+					else:
+						Subs[pl-12] = 1
+			
+					numplayers = numplayers + 1
+		
+		#Merge the lists into one
+		PlayingOrNot = Starting_11 + SubGK + Subs
+	
+	PlayingOrNot = Series(PlayingOrNot)
+	
+	#Create a total score list which will contain a players score if they are used this week and will contain zero otherwise.
+	TotalScore = []                      
+	for i in range(0, 15):
+		TotalScore.append(PlayingOrNot[i]*Stats[current_player]['GW Score'][i])
+	
+	#Add up all used player scores to create a team score for the week.
+	CurrentGameWeekScore = sum(TotalScore)
+	
+	#Add PlayingOrNot to the dataframe
+	Stats[current_player]['Playing?'] = pd.Series(PlayingOrNot)
+	
+	#Sort the dataframe first by is the player is playing or not, then by the original player order 
+	Stats[current_player] = Stats[current_player].sort_index(by=['Playing?','No.'], ascending =[False,True])	
+
+#---- Section 6: League table data
+#---- Still within the original loop of Section 3. This section starts by finding the team name of the current team. Then it cycles through every 
+#----previous game week to find the points scored and points deducted for transfers for each week. These are added up in 2 seperate variables and
+#----then appended to lists (TotalPointsList and TotalDeductionsList) which hold the data for all teams. Once this is done, it does the same thing
+#----for the current game week storing them output in different lists (GWTransferDeductionList and CurrentGameWeekScoreList).
+	
+	Team_Name_Tag = html.find_all('div', {'class':'ismPanel'})
+	Team_Name_Tag = str(Team_Name_Tag)
+	team_name = re.search('"ismSection3">(.+?)</h2', Team_Name_Tag)
+	#Check if player name exists
+	if team_name:
+		TeamName[current_player] = team_name.group(1)
+	
+	#Now work out total points and deductions for each player for every game week apart from the current one
+	#For every player, points and deductions start at 0
+	TotalPoints = 0
+	TD = 0
+	TotalDeductions = 0
+
+	for every_previous_gameweek in range(1,int(Game_Week)):
+		TD = 0
+		#Go to the each game week points page of each player in the league
+		url = 'http://fantasy.premierleague.com/entry/' + current_player + '/event-history/'+ str(every_previous_gameweek) + '/'
+		htmlString = get(url).text
+		html = BeautifulSoup(htmlString, 'html5lib')
+		
+		#Find the tag which contains the number of transfers and points deductions
+		DeductionTag = html.find_all('div', {'class':'ism-team-scoreboard__section'})
+		DeductionTag = str(DeductionTag)
+		
+		#Find the points deduction
+		#The number of transfers and points deducted are in the same line so this has to be done in stages
+		transfer_deduction_first_stage = re.findall('<dd>(.+?)</dd>', DeductionTag,re.DOTALL)
+		#If the above line exists (i.e. did the player have a team in the current week) then find any points deductions
+		#If not then set Score and Deductions = 0
+		if len(transfer_deduction_first_stage) > 1:
+			#Seperate points deduction from no. of transfers
+			transfer_deduction_second_stage = re.findall(' (.+?)\n',transfer_deduction_first_stage[1],re.DOTALL)
+			transfer_deduction = transfer_deduction_second_stage[1]
+			#Remove the empty spaces and the 'pts' text
+			transfer_deduction= re.sub(' ','',transfer_deduction)
+			transfer_deduction= re.sub('pts','',transfer_deduction)
+			if transfer_deduction:
+				#Convert to a string and then remove the first and last characters which are the brackets
+				TD = str(transfer_deduction)
+				TD = TD[1:-1]
+			#Add the points deduction from the current game week to the Total
+			TotalDeductions = TotalDeductions + int(TD)
+	
+			#Find the tag which contains the game week score
+			ScoreTags = html.find_all('div', {'class':'ism-scoreboard-panel__points'})
+			ScoreTags = str(ScoreTags)
+			#Extract the score
+			game_week_score = re.search('">(.+?)<sub>', ScoreTags)
+			#Add the game week score to the Total score
+			if game_week_score:
+				GameWeekScore = game_week_score.group(1)
+				TotalPoints = TotalPoints + int(GameWeekScore)
+		else:
+			TD = 0
+			GameWeekScore = 0
+			TotalDeductions = TotalDeductions + int(TD)
+			TotalPoints = TotalPoints + int(GameWeekScore)
+	
+	#Append a players Total score and points deduction to the list. This creates a list of scores in order of the players positions
+	TotalPointsList.append(TotalPoints)
+	TotalDeductionsList.append(TotalDeductions)
+	
+	#Work out the Gameweek score for each player
+	
+	#Go to the each game week points page of each player in the league
+	url = 'http://fantasy.premierleague.com/entry/' + current_player + '/event-history/'+ str(Game_Week) + '/'
+	htmlString = get(url).text
+	html = BeautifulSoup(htmlString, 'html5lib')
+		
+	#Find the tag which contains the number of transfers and points deductions
+	GWDeductionTag = html.find_all('div', {'class':'ism-team-scoreboard__section'})
+	GWDeductionTag = str(GWDeductionTag)
+	
+	GWTransferDeduction = 0	
+	
+	#Find the points deduction
+	#The number of transfers and points deducted are in the same line so this has to be done in stages
+	game_week_transfer_deduction_first_stage = re.findall('<dd>(.+?)</dd>', GWDeductionTag,re.DOTALL)
+	#If the above line exists (i.e. did the player have a team in the current week) then find any points deductions
+	#If not then set Score and Deductions = 0
+	if len(game_week_transfer_deduction_first_stage) > 1:
+		#Seperate points deduction from no. of transfers
+		game_week_transfer_deduction_second_stage = re.findall(' (.+?)\n',game_week_transfer_deduction_first_stage[1],re.DOTALL)
+		game_week_transfer_deduction = game_week_transfer_deduction_second_stage[1]
+		#Remove the empty spaces and the 'pts' text
+		game_week_transfer_deduction= re.sub(' ','',game_week_transfer_deduction)
+		game_week_transfer_deduction= re.sub('pts','',game_week_transfer_deduction)
+		if game_week_transfer_deduction:
+			#Convert to a string and then remove the first and last characters which are the brackets
+			GWTransferDeduction = str(game_week_transfer_deduction)
+			GWTransferDeduction = GWTransferDeduction[1:-1]
+			GWTransferDeduction = int(GWTransferDeduction)
+		else:
+			GWTransferDeduction = 0
+			
+	GWTransferDeductionList.append(GWTransferDeduction)
+	CurrentGameWeekScoreList.append(CurrentGameWeekScore)
+	
+#---- Section 7: Create League tables
+#----Now that all of the data has been collected, lists are created holding the total score from the previous game week and another one with 
+#----the current game week score for each team in the league. A list is then created containing the Total score in the current game week (Score).
+#----A dataframe is then created as a league table for the previous gameweek (League_Table_To_Previous_GW). A second Live league table is also 
+#----created which is up to date with any subs made etc. for the user.
+	
+#Add TotalPoints list and TotalDecustions list to get the Score
+PreviousGWTotalScore = list(map(add,TotalPointsList,TotalDeductionsList))
+CurrentGWScore = list(map(add,GWTransferDeductionList,CurrentGameWeekScoreList))
+Score = list(map(add,PreviousGWTotalScore,CurrentGWScore))
+
+#Create series
+UniquePlayerNumbers = Series(UniquePlayerNumbers)
+LeagueTeamNames = Series(LeagueTeamNames)
+PreviousGWTotalScore = Series(PreviousGWTotalScore)
+PlayerNames = Series(PlayerNames)
+
+GWTransferDeductionList = Series(GWTransferDeductionList)
+CurrentGameWeekScoreList = Series(CurrentGameWeekScoreList)
+Score = Series(Score)
+
+# Concatenate into a DataFrame
+League_Table_To_Previous_GW = pd.concat([PlayerNames,LeagueTeamNames,PreviousGWTotalScore],axis=1)
+
+# Set up the columns
+League_Table_To_Previous_GW.columns = ['Player Name','Team Name','Score']
+
+#Set index to start at 1
+League_Table_To_Previous_GW.index = np.arange(1, len(League_Table_To_Previous_GW) + 1)
+
+# Concatenate into a DataFrame
+Live_League_Table = pd.concat([PlayerNames,LeagueTeamNames,CurrentGameWeekScoreList,GWTransferDeductionList,Score],axis=1)
+
+# Set up the columns
+Live_League_Table.columns = ['Player Name','Team Name','GW Score','GW Deductions','Score']
+
+#Set index to start at 1
+Live_League_Table.index = np.arange(1, len(Live_League_Table) + 1)
+
+#Sort league table by score
+Live_League_Table = Live_League_Table.sort_index(by=['Score'], ascending =[False])
+
+#---- Section 8: Output
+#----The live league table, previous league table and the game week team of each player in the league are all outputted to an excel spreadsheet
+#----which creates a seperate tab for each.
+
+#Create an output file	
+writer = pd.ExcelWriter('Output.xlsx')
+#Create pages for Previous league table and live league table
+Live_League_Table.to_excel(writer, sheet_name='Live League Table',startrow = 0, startcol = 0)
+League_Table_To_Previous_GW.to_excel(writer, sheet_name='League Table (GW' + str(Game_Week - 1) +')',startrow = 0, startcol = 0)
+#Create a new tabe for each player's squad
+for current_player in UniquePlayerNumbers:
+	Stats[current_player].to_excel(writer, sheet_name=TeamName[current_player],startrow = 0, startcol = 0)
+
+writer.save()
+
+end_time = time.strftime("%H:%M:%S")
+print ('End = ' + end_time)
+
+print('Complete')
