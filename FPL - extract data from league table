@@ -339,7 +339,7 @@ for current_player in UniquePlayerNumbers:
 			Penalty_Saves = int(0)	
 
 		#Check if player has missed a penalty
-		penaltymisses = re.search('Penalty missed&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
+		penaltymisses = re.search('Penalties missed&lt;/td&gt; &lt;td&gt;(.+?)&lt;', tags)
 		#Check if player has missed a penalty
 		if penaltymisses:
 			Penalty_Missed = int(penaltymisses.group(1))
